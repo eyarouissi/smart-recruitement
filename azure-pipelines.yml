@@ -1,0 +1,88 @@
+# Deploy to Azure Kubernetes Service
+# Build and push image to Azure Container Registry; Deploy to Azure Kubernetes Service
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- master
+
+resources:
+- repo: self
+
+variables:
+  # Container registry service connection established during pipeline creation
+  dockerRegistryServiceConnection: 'cbopscommon'
+  imageRepository: '$(Build.Repository.Name)'
+  containerRegistry: 'cbopscommon.azurecr.io'
+  dockerfilePath: '$(Build.SourcesDirectory)/Dockerfile'
+  tag: '$(Build.BuildId)'
+
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+  
+stages:
+
+- stage: Build
+  displayName: Build and push to container registry
+  jobs:
+  - job: Build
+    displayName: Build
+    pool:
+      vmImage: $(vmImageName)
+    steps:     
+    - task: DownloadSecureFile@1
+      name: foo
+      inputs:
+        secureFile: '.env'
+    - script: cp $(foo.secureFilePath) .
+      displayName: 'moving .env'     
+    - script: cat .env
+      displayName: echo .env  
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: |
+          SUBSTRING=$(echo $(Build.Repository.Name)| cut -d'/' -f 2)
+          echo $SUBSTRING
+          echo "##vso[task.setvariable variable=RepoName]$SUBSTRING"
+    - bash:  |
+        SUBSTRING=$(echo $(Build.Repository.Name)| cut -d'/' -f 2)
+        echo $SUBSTRING
+        echo "##vso[task.setvariable variable=RepoNameOut;isOutput=true]$SUBSTRING"
+
+      name: MyOutputVar
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo $(RepoName)
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(RepoName)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+- stage: Deploy
+  displayName: Deploy to Container instance
+  jobs:
+  - job: Deploy
+    variables:
+      RepoName: $[stageDependencies.Build.Build.outputs['MyOutputVar.RepoNameOut']]
+  
+    displayName: Deploy
+    pool:
+      vmImage: vs2017-win2016
+    steps:
+    - task: Bash@3
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo $(RepoName)
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: 'careerboosts-internal(1bfff5ae-d024-4e62-b8ce-70088d77e9d5)'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: 'az container create -g cb-fueljet --name $(RepoName) --image cbopscommon.azurecr.io/$(RepoName):$(Build.BuildId) --registry-login-server cbopscommon.azurecr.io --registry-username cbopscommon --registry-password $(acrPassword) --cpu 1 --memory 1 --dns-name-label $(RepoName) --ports 8080'
